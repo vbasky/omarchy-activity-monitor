@@ -645,6 +645,8 @@ grep -Fq 'return "Shared"' "$panel_file" ||
   fail "activity panel does not distinguish integrated shared GPU memory"
 grep -Fq 'return "VRAM"' "$panel_file" ||
   fail "activity panel does not label dedicated GPU memory"
+grep -Fq 'return "Unified memory"' "$panel_file" ||
+  fail "activity panel does not label Apple unified memory when the GPU reports none"
 grep -Fq 'function storageCardValue()' "$panel_file" &&
   grep -Fq 'function storageCardDetail()' "$panel_file" &&
   grep -Fq '" free"' "$panel_file" ||
