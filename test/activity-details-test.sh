@@ -747,6 +747,45 @@ grep -Fxq $'schema\tactivity-resources\t1' <<<"$resource_without_route" ||
   fail "activity resources fail when optional route metadata is absent"
 pass "activity resources tolerate missing optional procfs inputs"
 
+mkdir -p "$proc_path/device-tree"
+printf 'apple,j414c\0apple,t6021\0apple,arm-platform\0' >"$proc_path/device-tree/compatible"
+printf 'Apple MacBook Pro (14-inch, M2 Max, 2023)\0' >"$proc_path/device-tree/model"
+apple_cpu_snapshot=$(
+  OMARCHY_SYSTEM_STATS_PROC_PATH="$proc_path" \
+    OMARCHY_SYSTEM_STATS_SYS_PATH="$sys_path" \
+    "$ROOT/activity-stats" --activity-resources
+)
+grep -Fxq $'cpu-name\tApple M2 Max' <<<"$apple_cpu_snapshot" ||
+  fail "activity names an Apple SoC from its device tree" "$apple_cpu_snapshot"
+printf 'apple,t8122\0' >"$proc_path/device-tree/compatible"
+printf 'Apple MacBook Pro (14-inch, M3, 2024)\0' >"$proc_path/device-tree/model"
+apple_model_snapshot=$(
+  OMARCHY_SYSTEM_STATS_PROC_PATH="$proc_path" \
+    OMARCHY_SYSTEM_STATS_SYS_PATH="$sys_path" \
+    "$ROOT/activity-stats" --activity-resources
+)
+grep -Fxq $'cpu-name\tApple M3' <<<"$apple_model_snapshot" ||
+  fail "activity names an unlisted Apple SoC from the device-tree model" "$apple_model_snapshot"
+rm -rf -- "$proc_path/device-tree"
+printf 'model name\t: Intel(R) Core(TM) i7-12700K CPU @ 3.60GHz\n' >"$proc_path/cpuinfo"
+intel_cpu_snapshot=$(
+  OMARCHY_SYSTEM_STATS_PROC_PATH="$proc_path" \
+    OMARCHY_SYSTEM_STATS_SYS_PATH="$sys_path" \
+    "$ROOT/activity-stats" --activity-resources
+)
+grep -Fxq $'cpu-name\tCore i7-12700K' <<<"$intel_cpu_snapshot" ||
+  fail "activity names an Intel processor from cpuinfo" "$intel_cpu_snapshot"
+printf 'model name\t: ARMv8 Processor rev 0 (v8l)\n' >"$proc_path/cpuinfo"
+generic_cpu_snapshot=$(
+  OMARCHY_SYSTEM_STATS_PROC_PATH="$proc_path" \
+    OMARCHY_SYSTEM_STATS_SYS_PATH="$sys_path" \
+    "$ROOT/activity-stats" --activity-resources
+)
+if grep -q $'^cpu-name\t' <<<"$generic_cpu_snapshot"; then
+  fail "activity presents a generic ARM model string as the processor name" "$generic_cpu_snapshot"
+fi
+pass "activity names the processor when the platform identifies it"
+
 process_snapshot=$(
   OMARCHY_SYSTEM_STATS_PROC_PATH="$proc_path" \
     OMARCHY_SYSTEM_STATS_PASSWD_PATH="$fixture_root/missing-passwd" \

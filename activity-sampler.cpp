@@ -319,6 +319,173 @@ std::uint64_t SystemValue(int name, std::uint64_t fallback) {
   return value > 0 ? static_cast<std::uint64_t>(value) : fallback;
 }
 
+std::string AppleSoCName(const std::string &chip) {
+  if (chip == "8103")
+    return "Apple M1";
+  if (chip == "6000")
+    return "Apple M1 Pro";
+  if (chip == "6001")
+    return "Apple M1 Max";
+  if (chip == "6002")
+    return "Apple M1 Ultra";
+  if (chip == "8112")
+    return "Apple M2";
+  if (chip == "6020")
+    return "Apple M2 Pro";
+  if (chip == "6021")
+    return "Apple M2 Max";
+  if (chip == "6022")
+    return "Apple M2 Ultra";
+  return {};
+}
+
+std::string HexChip(const std::string &text, std::size_t at, std::size_t marker) {
+  std::string chip;
+  for (std::size_t index = at + marker;
+       index < text.size() &&
+       std::isxdigit(static_cast<unsigned char>(text[index]));
+       ++index)
+    chip.push_back(text[index]);
+  return chip;
+}
+
+std::string AppleNameFromModel(const std::string &model) {
+  for (std::size_t index = 0; index < model.size(); ++index) {
+    if (model[index] != 'M' && model[index] != 'm')
+      continue;
+    if (index > 0 &&
+        std::isalpha(static_cast<unsigned char>(model[index - 1])) != 0)
+      continue;
+    if (index + 1 >= model.size() ||
+        std::isdigit(static_cast<unsigned char>(model[index + 1])) == 0)
+      continue;
+    std::string generation(1, model[index + 1]);
+    std::size_t next = index + 2;
+    while (next < model.size() &&
+           std::isdigit(static_cast<unsigned char>(model[next])) != 0) {
+      generation.push_back(model[next]);
+      ++next;
+    }
+    std::string tier;
+    if (next < model.size() && model[next] == ' ') {
+      const auto rest = model.substr(next + 1);
+      if (StartsWith(rest, "Ultra"))
+        tier = " Ultra";
+      else if (StartsWith(rest, "Max"))
+        tier = " Max";
+      else if (StartsWith(rest, "Pro"))
+        tier = " Pro";
+    }
+    return "Apple M" + generation + tier;
+  }
+  return {};
+}
+
+std::string AppleCpuName(const std::string &compatible, const std::string &model) {
+  const std::string marker = "apple,t";
+  std::size_t pos = 0;
+  while ((pos = compatible.find(marker, pos)) != std::string::npos) {
+    if (pos > 0 && compatible[pos - 1] != '\0') {
+      pos += marker.size();
+      continue;
+    }
+    const auto chip = HexChip(compatible, pos, marker.size());
+    const auto end = pos + marker.size() + chip.size();
+    if (chip.empty() || (end < compatible.size() && compatible[end] != '\0')) {
+      pos = std::max(end, pos + marker.size());
+      continue;
+    }
+    const auto name = AppleSoCName(chip);
+    if (!name.empty())
+      return name;
+    pos = end;
+  }
+  if (compatible.find("apple,") != std::string::npos || StartsWith(model, "Apple"))
+    return AppleNameFromModel(model);
+  return {};
+}
+
+std::string WithoutToken(std::string value, const std::string &token) {
+  for (auto at = value.find(token); at != std::string::npos; at = value.find(token, at))
+    value.erase(at, token.size());
+  return value;
+}
+
+std::string CollapseSpaces(std::string value) {
+  std::string collapsed;
+  bool pending_space = false;
+  for (const char character : value) {
+    if (character == ' ' || character == '\t') {
+      pending_space = !collapsed.empty();
+      continue;
+    }
+    if (pending_space)
+      collapsed.push_back(' ');
+    pending_space = false;
+    collapsed.push_back(character);
+  }
+  return collapsed;
+}
+
+std::string CompactCpuModel(std::string model) {
+  model = WithoutToken(std::move(model), "(R)");
+  model = WithoutToken(std::move(model), "(TM)");
+  model = WithoutToken(std::move(model), "(tm)");
+  for (const char *cut : {" CPU @", " CPU", " @"}) {
+    const auto at = model.find(cut);
+    if (at != std::string::npos)
+      model.erase(at);
+  }
+  model = CollapseSpaces(Trim(std::move(model)));
+  const std::string processor = " Processor";
+  if (EndsWith(model, processor))
+    model.erase(model.size() - processor.size());
+  const auto cores = model.rfind("-Core");
+  if (cores != std::string::npos) {
+    auto start = cores;
+    while (start > 0 && std::isdigit(static_cast<unsigned char>(model[start - 1])) != 0)
+      --start;
+    if (start > 0 && model[start - 1] == ' ')
+      model.erase(start - 1);
+  }
+  if (StartsWith(model, "Intel "))
+    model.erase(0, 6);
+  return CollapseSpaces(Trim(std::move(model)));
+}
+
+bool GenericArmModel(const std::string &model) {
+  const auto lower = Lowercase(model);
+  return StartsWith(lower, "armv") || lower.find("aarch64") != std::string::npos;
+}
+
+std::string CpuModelName(const std::string &cpuinfo) {
+  std::istringstream stream(cpuinfo);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (!StartsWith(line, "model name"))
+      continue;
+    const auto colon = line.find(':');
+    if (colon == std::string::npos)
+      continue;
+    const auto model = CompactCpuModel(Trim(line.substr(colon + 1)));
+    if (!model.empty() && !GenericArmModel(model))
+      return model;
+  }
+  return {};
+}
+
+std::string ReadCpuName(const Paths &paths) {
+  const auto compatible =
+      ReadText(Join(paths.proc, "device-tree/compatible")).value_or("");
+  auto model = ReadText(Join(paths.proc, "device-tree/model")).value_or("");
+  model.erase(std::remove(model.begin(), model.end(), '\0'), model.end());
+  model = Trim(std::move(model));
+  const auto apple = AppleCpuName(compatible, model);
+  if (!apple.empty())
+    return apple;
+  return CpuModelName(ReadText(Join(paths.proc, "cpuinfo")).value_or(""));
+}
+
 class ResourceCollector {
 public:
   explicit ResourceCollector(Paths paths) : paths_(std::move(paths)) {}
@@ -327,6 +494,7 @@ public:
     DiscoverTopology();
     output << "schema\tactivity-resources\t1\n";
     output << "sample\t" << UptimeSample(paths_) << '\n';
+    EmitCpuName(output);
     EmitMemorySpeed(output);
     EmitCpu(output);
     EmitCpuTopology(output);
@@ -396,6 +564,7 @@ private:
   bool topology_discovered_ = false;
   bool memory_speed_checked_ = false;
   int memory_speed_mts_ = -1;
+  std::string cpu_name_;
   std::vector<std::string> cpu_frequency_paths_;
   std::vector<BlockDevice> block_devices_;
   std::vector<CpuTopo> cpu_topo_;
@@ -404,6 +573,7 @@ private:
     if (topology_discovered_)
       return;
     topology_discovered_ = true;
+    cpu_name_ = ReadCpuName(paths_);
 
     const std::string frequency_root =
         Join(paths_.sys, "devices/system/cpu/cpufreq");
@@ -746,6 +916,11 @@ private:
       output << "disk\t" << (dev ? *dev : "") << '\t' << device.name << '\t'
              << fields[2] << '\t' << fields[6] << '\n';
     }
+  }
+
+  void EmitCpuName(std::ostream &output) const {
+    if (!cpu_name_.empty())
+      output << "cpu-name\t" << Sanitize(cpu_name_) << '\n';
   }
 
   void EmitCpuFrequency(std::ostream &output) const {
@@ -1366,29 +1541,11 @@ struct GpuAdapter {
 std::string AppleGpuName(const std::string &uevent) {
   const std::string marker = "apple,agx-t";
   const auto at = uevent.find(marker);
-  if (at == std::string::npos)
-    return "Apple GPU";
-  std::string chip;
-  for (std::size_t index = at + marker.size();
-       index < uevent.size() && std::isxdigit(static_cast<unsigned char>(uevent[index]));
-       ++index)
-    chip.push_back(uevent[index]);
-  if (chip == "8103")
-    return "Apple M1";
-  if (chip == "6000")
-    return "Apple M1 Pro";
-  if (chip == "6001")
-    return "Apple M1 Max";
-  if (chip == "6002")
-    return "Apple M1 Ultra";
-  if (chip == "8112")
-    return "Apple M2";
-  if (chip == "6020")
-    return "Apple M2 Pro";
-  if (chip == "6021")
-    return "Apple M2 Max";
-  if (chip == "6022")
-    return "Apple M2 Ultra";
+  if (at != std::string::npos) {
+    const auto name = AppleSoCName(HexChip(uevent, at, marker.size()));
+    if (!name.empty())
+      return name;
+  }
   const auto generation = uevent.find("apple,agx-g");
   if (generation != std::string::npos && generation + 12 < uevent.size())
     return "Apple G" + uevent.substr(generation + 11, 3);

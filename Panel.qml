@@ -313,7 +313,9 @@ Panel {
 
   function cpuCardLabel() {
     var frequency = frequencyText(snapshot.cpuFrequencyMHz, "MHz")
-    return frequency ? "CPU · " + frequency : "CPU"
+    var name = String(snapshot.cpuName || "")
+    var title = name ? name : "CPU"
+    return frequency ? title + " · " + frequency : title
   }
 
   function memoryCardLabel() {
